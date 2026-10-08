@@ -1,8 +1,17 @@
-import {Zernio} from '@zernio/node';
+
+import "dotenv/config";
+import { Zernio } from "@zernio/node";
+
+const apiKey = process.env.ZERNIO_API_KEY;
+
+if (!apiKey) {
+    throw new Error(
+        "ZERNIO_API_KEY is missing. Check your backend .env file."
+    );
+}
 
 const zernio = new Zernio({
-    apiKey: process.env.ZERNIO_API_KEY || "",
-    baseURL : "http://zernio.com/api"
+    apiKey,
 });
 
-export default zernio
+export default zernio;
