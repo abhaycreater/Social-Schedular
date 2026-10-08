@@ -14,4 +14,5 @@ const zernio = new Zernio({
     apiKey,
 });
 
+
 export default zernio;
