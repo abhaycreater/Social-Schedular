@@ -11,7 +11,7 @@ const accountSchema = new mongoose.Schema({
         enum:["twitter" , "linkedin" , "facebook" , "instagram","facebook_page" , "linkedin_page" , "instagram_page"], 
         required: true
     },
-    handel:{
+    handle:{
         type: String,
         required: true
     },
