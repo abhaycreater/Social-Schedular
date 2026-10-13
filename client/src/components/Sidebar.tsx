@@ -1,15 +1,11 @@
 import { CalendarDaysIcon, LayoutDashboardIcon, LogOutIcon, UsersIcon, Wand2Icon } from 'lucide-react'
 import React from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
+import { useAuth } from '../context/AuthContext'
 
 const Sidebar = ({isOpen , setIsOpen}:{isOpen: boolean , setIsOpen:(val: boolean) => void}) => {
 
-    const {logout , user} = {
-        logout : ()=>{
-            window.location.href = "/";
-        },
-        user:{name:"Abhay Patere" , email: "abhaypatere@gmail.com"}
-    }
+    const {logout , user} = useAuth()
 
     const navItems = [
         {name: "Dashboard", icon: LayoutDashboardIcon , path:"/dashboard"},

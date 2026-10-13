@@ -15,7 +15,10 @@ const app = express();
 await connectDb();
 
 // Middleware
-app.use(cors())
+app.use(cors({
+    origin:"http://localhost:5173",
+    credentials: true,
+}))
 app.use(express.json());
 
 const port = process.env.PORT || 3000;
@@ -26,8 +29,8 @@ app.get('/', (req: Request, res: Response) => {
 
 app.use('/api/auth', authRoute )
 app.use('/api/oauth' , socialMediaRoute)
-app.use('/api/account' , accountsRoute)
-app.use('/api/post' , postRouter);
+app.use('/api/accounts' , accountsRoute)
+app.use('/api/posts' , postRouter);
 app.use('/api/activity' , activityRoute)
 
 // Initilize scheduler

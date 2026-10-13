@@ -3,194 +3,387 @@ import { Response } from "express";
 import { authRequest } from "../middleware/auth.middleware.js";
 import { GoogleGenAI } from "@google/genai";
 import axios from "axios";
-import {cloudinary} from "../config/cloudinary.js";
+import { cloudinary } from "../config/cloudinary.js";
 import { Generation } from "../models/Generations.js";
 import { Post } from "../models/Post.js";
 
-// helpers to polll leonardo.ai
-const pollLeonardoJob = async (generationId: string , apiKey:string) :Promise<string>=>{
+// Supported social platforms
+type Platform =
+    | "twitter"
+    | "linkedin"
+    | "facebook"
+    | "instagram"
+    | "facebook_page"
+    | "linkedin_page"
+    | "instagram_page";
+
+const VALID_PLATFORMS: Platform[] = [
+    "twitter",
+    "linkedin",
+    "facebook",
+    "instagram",
+    "facebook_page",
+    "linkedin_page",
+    "instagram_page",
+];
+
+const isPlatform = (value: string): value is Platform =>
+    VALID_PLATFORMS.includes(value as Platform);
+
+// Poll Leonardo AI until generation completes
+const pollLeonardoJob = async (
+    generationId: string,
+    apiKey: string
+): Promise<string> => {
     const maxRetries = 20;
     const delay = 5000;
 
-    for(let i = 0; i < maxRetries ; i++){
-        try {
-            const response = await axios.get(`https://cloud.leonardo.ai/api/rest/v1/generations/${generationId}`, {headers:{
-                accept:"application/json" , authorization:`Bearer ${apiKey}`
-            }})
-            const generation = response.data.generations_by_pk;
-            if(generation.status === "COMPLETE"){
-                if(generation.generated_image && generation.generation_image.length > 0){
-                    return generation.generated_images[0].url;
-                }
-                throw new Error("Generation complete but no image found.")    
+    for (let i = 0; i < maxRetries; i++) {
+        const response = await axios.get(
+            `https://cloud.leonardo.ai/api/rest/v1/generations/${generationId}`,
+            {
+                headers: {
+                    accept: "application/json",
+                    authorization: `Bearer ${apiKey}`,
+                },
             }
-            if(generation.status === 'FAILED'){
-                throw new Error("Leonardo.ai generation failed.")
+        );
+
+        const generation = response.data?.generations_by_pk;
+
+        if (generation?.status === "COMPLETE") {
+            const images = generation.generated_images;
+
+            if (Array.isArray(images) && images[0]?.url) {
+                return images[0].url;
             }
-        } catch (error: any) {
-            console.error("Polling error:", error?.response?.data || error.message)
+
+            throw new Error("Generation completed, but no image was returned.");
         }
 
-        await new Promise((resolve)=> setTimeout(resolve , delay))
+        if (generation?.status === "FAILED") {
+            throw new Error("Leonardo AI image generation failed.");
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, delay));
     }
-    throw new Error("Leonardo.ai generation time out.")
-}
 
-// Generat post
+    throw new Error("Leonardo AI image generation timed out.");
+};
+
+// Generate a social media post
 // POST /api/posts/generate
-export const generatePost = async (req:authRequest , res: Response):Promise<void>=>{
+export const generatePost = async (
+    req: authRequest,
+    res: Response
+): Promise<void> => {
     try {
-        const {prompt , tone , generateImage} = req.body;
+        const { prompt, tone, generateImage } = req.body;
 
-        const apiKey = process.env.GEMINI_API_KEY;
-        if(!apiKey){
-            res.status(400).json({message:"Gemini API key is missing. Please add it to your server/.env file"});
+        if (typeof prompt !== "string" || !prompt.trim()) {
+            res.status(400).json({ message: "Please provide a prompt." });
             return;
         }
-        const ai = new GoogleGenAI({apiKey});
 
-        //Generate Text
+        const apiKey = process.env.GEMINI_API_KEY;
+
+        if (!apiKey) {
+            res.status(500).json({
+                message: "Gemini API key is missing from the backend environment.",
+            });
+            return;
+        }
+
+        const ai = new GoogleGenAI({ apiKey });
+
         const textResponse = await ai.models.generateContent({
-            model:"gemini-2.5-flash",
-            contents:`Generate a social media post based on this prompt: ${prompt}.
-            Tone:${tone}.
-            Include relevent hashtag.
-            Format the resopnse as JSON with "content" and "imagePrompt" fileds. The "imagePrompt" should be a highly descriptive prompt for an image generator the complements the post.`
+            model: "gemini-2.5-flash",
+            contents: `Generate a social media post based on this prompt: ${prompt}.
+Tone: ${tone || "friendly"}.
+Include relevant hashtags.
+Return JSON with "content" and "imagePrompt" fields.
+The imagePrompt should describe an image that complements the post.`,
         });
 
-        let content = "";
+        const rawText = textResponse.text || "";
+        let content = rawText;
         let imagePrompt = prompt;
 
         try {
-            const rawText = textResponse.text || "";
-            const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-            const data = jsonMatch ? JSON.parse(jsonMatch[0]) : {content : rawText , imagePrompt: prompt};
-        } catch (e) {
-            content = textResponse.text || "";
+            const cleanedText = rawText
+                .replace(/^```(?:json)?\s*/i, "")
+                .replace(/\s*```$/, "");
+
+            const jsonMatch = cleanedText.match(/\{[\s\S]*\}/);
+
+            if (jsonMatch) {
+                const data = JSON.parse(jsonMatch[0]);
+                content = data.content || rawText;
+                imagePrompt = data.imagePrompt || prompt;
+            }
+        } catch (error) {
+            console.error("Gemini JSON parsing error:", error);
         }
 
         let mediaUrl = "";
-        if(generateImage){
-            try {
-                const leonardoKey = process.env.LEONARDO_API_KEY;
-                if(leonardoKey){
-                    // Use Leonardo.ai for image generation
+
+        if (generateImage) {
+            const leonardoKey = process.env.LEONARDO_API_KEY;
+
+            if (leonardoKey) {
+                try {
                     const leoResponse = await axios.post(
                         "https://cloud.leonardo.ai/api/rest/v2/generations",
                         {
-                            "public":false,
-                            "model": "gpt-image-2",
-                            "parameters": {
-                                "quality" : "LOW",
-                                "prompt" : imagePrompt,
-                                "quantity": 1,
-                                "width":1024,
-                                "height" : 1024,
-                                "prompt_enhance":"OFF"
-                            }
-                        },{
-                            headers:{
-                                accept:"application/json",
-                                authorization:`Beare ${leonardoKey}r`,
-                                "content-type" : "application/json"
-                            }
+                            public: false,
+                            model: "gpt-image-2",
+                            parameters: {
+                                quality: "LOW",
+                                prompt: imagePrompt,
+                                quantity: 1,
+                                width: 1024,
+                                height: 1024,
+                                prompt_enhance: "OFF",
+                            },
+                        },
+                        {
+                            headers: {
+                                accept: "application/json",
+                                authorization: `Bearer ${leonardoKey}`,
+                                "content-type": "application/json",
+                            },
                         }
-                    )
-                    const generationId = leoResponse.data.generate.generationId;
-                    const tempUrl = await pollLeonardoJob(generationId , leonardoKey);
+                    );
 
-                    // upload to cloudinary for persistance
-                    const uploadResult = await cloudinary.uploader.upload(tempUrl,{
-                        folder: "ai-generations",
-                    });
+                    const generationId =
+                        leoResponse.data?.generate?.generationId;
+
+                    if (!generationId) {
+                        throw new Error(
+                            "Leonardo AI did not return a generation ID."
+                        );
+                    }
+
+                    const tempUrl = await pollLeonardoJob(
+                        generationId,
+                        leonardoKey
+                    );
+
+                    const uploadResult = await cloudinary.uploader.upload(
+                        tempUrl,
+                        { folder: "ai-generations" }
+                    );
+
                     mediaUrl = uploadResult.secure_url;
+                } catch (error: any) {
+                    console.error(
+                        "Image generation failed:",
+                        error?.response?.data || error?.message
+                    );
                 }
-            } catch (error:any) {
-                console.error("Image generation failed:" , error)
+            } else {
+                console.warn(
+                    "LEONARDO_API_KEY is missing; generating text only."
+                );
             }
         }
-        // save generation to db
-        const generation =  await Generation.create({
+
+        const generation = await Generation.create({
             user: req.user._id,
-            prompt ,
+            prompt,
             content,
             mediaUrl,
-            mediaType:mediaUrl ? "image" : undefined,
-            tone
-        }) 
+            mediaType: mediaUrl ? "image" : undefined,
+            tone,
+        });
 
-        res.json(generation);
+        res.status(201).json(generation);
+    } catch (error: any) {
+        console.error("Generate post error:", error?.response?.data || error?.message);
 
-    } catch (error : any) {
-        res.status(500).json({message: error?.message || "Server error"})
+        res.status(500).json({
+            message: error?.message || "Server error",
+        });
     }
-}
+};
 
-// Get generations
+// Get generation history
 // GET /api/posts/generation
-export const getGeneration = async (req : authRequest , res:Response):Promise<void> =>{
-    try{
-        const generations = await Generation.find({user: req.user._id}).sort({createdAt: -1})
-        res.json(generations)
-    }catch(error: any){
-        res.status(500).json({message: error?.message || "Server Error"})
-    }
-}
-
-// Get posts
-// Get /api/posts
-export const getPosts = async (req:authRequest , res:Response):Promise<void>=>{
+export const getGeneration = async (
+    req: authRequest,
+    res: Response
+): Promise<void> => {
     try {
-        const posts = await Post.find({user: req.user._id});
-        res.json(posts)
-    } catch (error:any) {
-        res.status(500).json({message: error?.message || "Server Error"})
-    }
-}
+        const generations = await Generation.find({
+            user: req.user._id,
+        }).sort({ createdAt: -1 });
 
-// Scheduled post
+        res.json(generations);
+    } catch (error: any) {
+        res.status(500).json({
+            message: error?.message || "Server error",
+        });
+    }
+};
+
+// Get scheduled and published posts
+// GET /api/posts
+export const getPosts = async (
+    req: authRequest,
+    res: Response
+): Promise<void> => {
+    try {
+        const posts = await Post.find({
+            user: req.user._id,
+        }).sort({ createdAt: -1 });
+
+        res.json(posts);
+    } catch (error: any) {
+        res.status(500).json({
+            message: error?.message || "Server error",
+        });
+    }
+};
+
+// Schedule a post
 // POST /api/posts
-export const schedulePost = async (req:authRequest , res:Response):Promise<void>=>{
+export const schedulePost = async (
+    req: authRequest,
+    res: Response
+): Promise<void> => {
     try {
-        const {content , platforms , scheduledFor , status} = req.body;
+        const { content, platforms, scheduledFor, status } = req.body;
 
-        // parse platform if it comes as astringified array from FormData
-        let parsedPlatforms = platforms;
-        if(typeof platforms === "string"){
-            try{
-                parsedPlatforms = JSON.parse(platforms)
-            }catch(error){
-                parsedPlatforms = platforms.split(",")
+        // Parse platforms sent by FormData
+        let rawPlatforms: unknown = platforms;
+
+        if (typeof rawPlatforms === "string") {
+            const platformText = rawPlatforms;
+            try {
+                rawPlatforms = JSON.parse(platformText);
+            } catch {
+                rawPlatforms = platformText.split(",");
             }
         }
 
-        let mediaUrl:string | undefined = req.body.mediaUrl;
-        let mediaType : "image" | "video" | undefined = req.body.mediaType;
+        if (!Array.isArray(rawPlatforms)) {
+            res.status(400).json({
+                message: "Platforms must be provided as an array.",
+            });
+            return;
+        }
 
-        if(req.file){
-            const result = await new Promise<any>((resolve , reject)=>{
-                const stream = cloudinary.uploader.upload_stream({resource_type:"auto" , folder: "social-schedular"} , (error , result)=>{
-                    if(error) reject(error);
-                    else resolve(result)
-                });
+        const platformStrings: string[] = rawPlatforms
+            .filter(
+                (value: unknown): value is string =>
+                    typeof value === "string"
+            )
+            .map((value: string) => value.trim())
+            .filter(Boolean);
+
+        const invalidPlatforms = platformStrings.filter(
+            (value) => !isPlatform(value)
+        );
+
+        if (invalidPlatforms.length > 0) {
+            res.status(400).json({
+                message: `Invalid platforms: ${invalidPlatforms.join(", ")}`,
+            });
+            return;
+        }
+
+        // TypeScript now knows these are valid platform values
+        const parsedPlatforms: Platform[] = platformStrings.filter(isPlatform);
+
+        if (parsedPlatforms.length === 0) {
+            res.status(400).json({
+                message: "Please select at least one social platform.",
+            });
+            return;
+        }
+
+        if (typeof content !== "string" || !content.trim()) {
+            res.status(400).json({
+                message: "Post content is required.",
+            });
+            return;
+        }
+
+        if (
+            typeof scheduledFor !== "string" ||
+            Number.isNaN(Date.parse(scheduledFor))
+        ) {
+            res.status(400).json({
+                message: "Please provide a valid scheduled date and time.",
+            });
+            return;
+        }
+
+        const scheduledDate = new Date(scheduledFor);
+
+        if (scheduledDate.getTime() <= Date.now()) {
+            res.status(400).json({
+                message: "Please choose a future date and time.",
+            });
+            return;
+        }
+
+        // Handle optional media upload
+        let mediaUrl: string | undefined = req.body.mediaUrl;
+        let mediaType: "image" | "video" | undefined = req.body.mediaType;
+
+        if (req.file) {
+            const result = await new Promise<any>((resolve, reject) => {
+                const stream = cloudinary.uploader.upload_stream(
+                    {
+                        resource_type: "auto",
+                        folder: "social-schedular",
+                    },
+                    (error, uploadResult) => {
+                        if (error) {
+                            reject(error);
+                        } else if (uploadResult) {
+                            resolve(uploadResult);
+                        } else {
+                            reject(
+                                new Error(
+                                    "Cloudinary returned no upload result."
+                                )
+                            );
+                        }
+                    }
+                );
+
                 stream.end(req.file!.buffer);
             });
+
             mediaUrl = result.secure_url;
-            mediaType = result.resource_type === "video" ? "video" : "image";
+            mediaType =
+                result.resource_type === "video" ? "video" : "image";
         }
 
         const post = await Post.create({
-            user:req.user._id,
-            content , 
-            platforms :parsedPlatforms,
+            user: req.user._id,
+            content: content.trim(),
+            platforms: parsedPlatforms,
             mediaUrl,
             mediaType,
-            scheduledFor,
-            status
-        })
+            scheduledFor: scheduledDate,
+            status: status === "draft" ? "draft" : "scheduled",
+        });
 
-        res.status(201).json({message: "Post scheduled successfully." , post})
-    } catch (error:any) {
-        res.status(500).json({message: error?.message || "Server Error"})
+        res.status(201).json({
+            message: "Post scheduled successfully.",
+            post,
+        });
+    } catch (error: any) {
+        console.error(
+            "Schedule post error:",
+            error?.response?.data || error?.message
+        );
+
+        res.status(500).json({
+            message: error?.message || "Server error",
+        });
     }
-}
+};

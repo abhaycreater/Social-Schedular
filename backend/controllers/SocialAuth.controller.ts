@@ -1,41 +1,71 @@
 import { Request, Response } from "express";
 import zernio from "../config/zernio.js"
-import User from "../models/user.js";
+import User from "../models/User.js";
 import { Account } from "../models/Accounts.js";
 import { authRequest } from "../middleware/auth.middleware.js";
 
 
 // Helper to ensure user has a zernio profile
-const getOrCreateZernioProfile = async (user: any) : Promise<String> =>{
-    try{
-        const result = await zernio.profiles.listProfiles();
-        const data = result.data as any;
-        const profiles : any[] = Array.isArray(data) ? data : data?.profiles || data?.data || [];
+// const getOrCreateZernioProfile = async (user: any) : Promise<String> =>{
+//     try{
+//         const result = await zernio.profiles.listProfiles();
+//         const data = result.data as any;
+//         const profiles : any[] = Array.isArray(data) ? data : data?.profiles || data?.data || [];
 
-        if(profiles.length > 0){
-            const pid = profiles[0]._id || profiles[0].id
-            await User.findByIdAndUpdate(user._id,{zernioProfileId: pid});
-            return pid;
-        }
+//         if(profiles.length > 0){
+//             const pid = profiles[0]._id || profiles[0].id
+//             await User.findByIdAndUpdate(user._id,{zernioProfileId: pid});
+//             return pid;
+//         }
 
-        const createResult = await zernio.profiles.createProfile({
-            body:{name:`${user.name || user.email}'s workspace`} as any,
-        })
-        const created = (createResult.data as any)?.profile || createResult.data;
+//         const createResult = await zernio.profiles.createProfile({
+//             body:{name:`${user.name || user.email}'s workspace`} as any,
+//         })
+//         const created = (createResult.data as any)?.profile || createResult.data;
 
-        const pid = created?._id || created?.id;
+//         const pid = created?._id || created?.id;
 
-        if(!pid){
-            throw new Error("Failed to create Zernio profile - no ID returned")
-        }
+//         if(!pid){
+//             throw new Error("Failed to create Zernio profile - no ID returned")
+//         }
 
-        await User.findByIdAndUpdate(user._id , {zernioProfileId: pid});
-        return pid;
-    }catch(error : any){
-        console.error("getOrcreateZernioProfile Error:", error?.message || error);
-        throw error;
-    }
-}
+//         await User.findByIdAndUpdate(user._id , {zernioProfileId: pid});
+//         return pid;
+//     }catch(error : any){
+//         console.error("getOrcreateZernioProfile Error:", error?.message || error);
+//         throw error;
+//     }
+// }
+
+const getOrCreateZernioProfile = async (
+  user: any
+): Promise<string> => {
+  // Reuse the profile already associated with this user.
+  if (user.zernioProfileId) {
+    return user.zernioProfileId;
+  }
+
+  const result = await zernio.profiles.createProfile({
+    body: {
+      name: `${user.name || user.email}'s workspace`,
+    } as any,
+  });
+
+  const data = result.data as any;
+  const profile = data?.profile || data;
+  const profileId = profile?._id || profile?.id;
+
+  if (!profileId) {
+    throw new Error("Zernio did not return a profile ID");
+  }
+
+  await User.findByIdAndUpdate(user._id, {
+    zernioProfileId: profileId,
+  });
+
+  return profileId;
+};
+
 
 // Generate OAuth authorization URl
 // GET /api/auth/:paltform
@@ -101,18 +131,30 @@ export const syncAccounts = async (req:authRequest , res:Response):Promise<void>
             }
 
             const account = await Account.findOneAndUpdate(
-                {zernioAccountsId : zid},
-                {
-                    user: req.user._id,
-                    platform : normalizedPlatform,
+            {
+                user: req.user._id,
+                zernioAccountId: String(zid)
+            },
+            {
+                $set: {
+                    platform: normalizedPlatform,
                     handle: zAccount.username || zAccount.name || zAccount.handle || "Unknown",
-                    zernioAccountId : zid,
-                    status : "connected",
-                    avatarUrl : zAccount.avatarUrl || zAccount.picture || zAccount.profile_image_url,
-                },
-                {upsert: true, returnDocument: 'after'}
-            )
-            syncedAccounts.push(account)
+                    status: "connected",
+                    avatarUrl:
+                        zAccount.avatarUrl ||
+                        zAccount.picture ||
+                        zAccount.profile_image_url ||
+                        ""
+                }
+            },
+            {
+                upsert: true,
+                new: true,
+                runValidators: true
+            }
+        );
+
+        syncedAccounts.push(account);
         }
         res.json(syncedAccounts)
     } catch (error : any) {
