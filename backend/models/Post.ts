@@ -30,9 +30,13 @@ const postSchema = new mongoose.Schema({
     status:{
         type: String,
         enum:[
-            "draft", "scheduled" ,"published" ,"failed"
+            "draft", "scheduled" , "publishing" ,"published" ,"failed"
         ],
         default:"scheduled"
+    },
+    zernioPostId: {
+        type: String,
+        default: undefined
     }
 },{timestamps: true});
 

@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from "react"
 import { dummyPostsData, PLATFORMS } from "../assets/assets";
 import { ArrowRightIcon, CalendarDaysIcon, CalendarIcon, ClockIcon, SendIcon, XIcon } from "lucide-react";
+import api from "../API/axios";
+import toast from "react-hot-toast";
 
 
 const Scheduler = () => {
@@ -13,12 +15,17 @@ const Scheduler = () => {
     const [loading ,setLoading] = useState(false);
 
     const fetchPosts = async ()=>{
-        setPosts(dummyPostsData)
+        try {
+            const {data} = await api.get('/api/posts')
+            setPosts(data)
+        } catch (error  :any) {
+            toast.error(error?.response?.data?.message || error.message)
+        }
     };
 
     useEffect(()=>{
         (async ()=> await fetchPosts())();
-        const interval = setInterval(async ()=> await fetchPosts(), 1000);
+        const interval = setInterval(async ()=> await fetchPosts(), 10000);
         return ()=> clearInterval(interval)
     },[])
 
@@ -29,11 +36,44 @@ const Scheduler = () => {
 
     const handelScheduled = async (e : React.FormEvent)=>{
         e.preventDefault();
-        setLoading(true);
-        setTimeout(()=>{
+        if(selectedPlatform.length === 0 ){
+            toast.error("Select at least one plateform");
+            return;
+        }
+        if(!scheduledData || !scheduledTime){
+            toast.error("Select date and time");
+            return;
+        }
+        if(selectedPlatform.includes('instagram') && !mediaFile){
+            toast.error("Instagram require an image or video");
+            return;
+        }
+        
+        const scheduledFor = new Date(`${scheduledData}T${scheduledTime}`).toISOString();
+
+        const formDate = new FormData();
+
+        formDate.append("content" , content);
+        formDate.append("scheduledFor" , scheduledFor);
+        formDate.append("status" , "scheduled");
+        formDate.append("platforms" , JSON.stringify(selectedPlatform));
+        if(mediaFile) formDate.append("media" , mediaFile);
+
+        setLoading(true)
+        try{
+            await api.post('/api/posts' , formDate , {headers: {"Content-Type" : "multipart/form-data"}});
+            toast.success("Post scheduled!");
+            setContent("");
+            setScheduledData("");
+            setScheduledTime("");
+            setSelectedPlatform([]);
+            setMediaFile(null);
+            fetchPosts();
+        }catch(error: any){
+            toast.error(error?.response?.data?.message || error.message);
+        }finally{
             setLoading(false);
-            setPosts((prev)=> [...prev , dummyPostsData[0]])
-        },1000)
+        }
     }
      
   return (
@@ -88,7 +128,7 @@ const Scheduler = () => {
                     ):(
                         <label className="flex items-center justify-center gap-2 p-5 py-10 border-2 border-dashed border-slate-200 rounded-xl cursor-pointer hover:border-red-300 hover:bg-red-50/30 transition-all group">
                             <span className="text-sm text-slate-500 group-hover:text-red-600 transition-colors">Click to uploade image or video</span>
-                            <input type="file" accept="omage/*, video/*" className="hidden" onChange={(e)=>e.target.files?.[0] && setMediaFile(e.target.files[0])} />
+                            <input type="file" accept="image/*, video/*" className="hidden" onChange={(e)=>e.target.files?.[0] && setMediaFile(e.target.files[0])} />
                         </label>
                     )}
                 </div>

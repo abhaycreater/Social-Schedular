@@ -3,12 +3,17 @@ import { Post } from '../models/Post.js';
 import { Account } from '../models/Accounts.js';
 import { ActivityLog } from '../models/ActivityLog.js';
 import zernio from '../config/zernio.js';
+import { platform } from 'os';
 
 export const initScheduler = ()=>{
     cron.schedule("* * * * *", async ()=>{
         try{
             const now = new Date();
             const postToPublish = await Post.find({status: "scheduled" , scheduledFor: {$lte:now}});
+
+            console.log(
+                `[Scheduler] Found ${postToPublish.length} posts due at ${now.toISOString()}`
+            );
 
             for (const post of postToPublish){
                 try {
@@ -19,13 +24,24 @@ export const initScheduler = ()=>{
                         zernioAccountId:{$exists : true}
                     })
 
-                    if(accounts.length === 0){
-                        console.log(`No connected Zernio accounts found for post ${post._id}`);
-                       continue; 
+                    if (accounts.length === 0) {
+                        console.error("No connected Zernio accounts found", {
+                            postId: String(post._id),
+                            requestedPlatforms: post.platforms
+                        });
+
+                        post.status = "failed";
+                        await post.save();
+                        continue;
                     }
 
+                    console.error("No connected Zernio accounts found", {
+                        postId: String(post._id),
+                        requestedPlatforms: post.platforms,
+                    });
+
                     const zernioPlatforms = accounts.map((acc)=>({
-                        tform: acc.platform as any,
+                        platform: acc.platform as any,
                         accountId : acc.zernioAccountId!
                     }))
 
@@ -41,16 +57,55 @@ export const initScheduler = ()=>{
                         body:payload
                     })
 
-                    const publishedPost = (response.data as any)?.post || response.data;
+                    console.log(
+                        "FULL ZERNIO PUBLISH RESPONSE:",
+                        JSON.stringify(response.data, null, 2)
+                    );
 
-                    if(!publishedPost){
-                        throw new Error("Failed to get post object from Zernio response");
-                    }
+                   
+                       const publishedPost = (response.data as any)?.post ?? response.data;
 
-                    console.log(`Zernio post created: ${publishedPost._id || publishedPost.id}`);
+                        if (!publishedPost?._id) {
+                            throw new Error("Zernio did not return a post ID.");
+                        }
 
-                    post.status = "published";
-                    await post.save();
+                        const platformResults = publishedPost.platforms ?? [];
+
+                        const allPublished =
+                            publishedPost.status === "published" &&
+                            platformResults.length > 0 &&
+                            platformResults.every(
+                                (p: any) => p.status === "published"
+                            );
+
+                        const hasFailed =
+                            publishedPost.status === "failed" ||
+                            publishedPost.status === "partial" ||
+                            platformResults.some((p: any) => p.status === "failed");
+
+                        post.zernioPostId = publishedPost._id;
+
+                        if (allPublished) {
+                            post.status = "published";
+                        } else if (hasFailed) {
+                            post.status = "failed";
+                        } else {
+                            post.status = "publishing";
+                        }
+
+                        await post.save();
+
+                        if (post.status === "published") {
+                            await ActivityLog.create({
+                                user: post.user,
+                                actionType: "POST_PUBLISHED",
+                                description: `Published post to ${accounts
+                                    .map((a) => a.platform)
+                                    .join(", ")}`,
+                                relatedPost: post._id
+                            });
+                        }
+
 
                     await ActivityLog.create({
                         user: post.user,
